@@ -1,0 +1,6 @@
+python-telegram-bot==20.7
+google-genai==0.2.1
+pyodbc==5.0.1
+python-dotenv==1.0.0
+holidays==0.41
+cachetools==5.3.3

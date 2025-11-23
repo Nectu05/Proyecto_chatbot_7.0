@@ -1,0 +1,7 @@
+{
+  "name": "Gon - Fisioterapia Bot",
+  "description": "Asistente virtual inteligente para el consultorio de Ana María López Fisioterapia Especializada.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

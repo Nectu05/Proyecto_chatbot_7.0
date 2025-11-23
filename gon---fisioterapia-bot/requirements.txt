@@ -1,0 +1,7 @@
+
+streamlit
+google-generativeai
+holidays
+python-dotenv
+# pyodbc # Descomentar cuando configures SQL Server real
+# sqlalchemy # Descomentar cuando configures SQL Server real
