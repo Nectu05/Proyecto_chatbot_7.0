@@ -66,7 +66,7 @@ def init_db():
         # Insert services (Batch insert)
         services_sql = """
         INSERT INTO Services (id, nombre, duracion, precio, description) VALUES
-        (1, 'Consulta', 60, 65000, 'Evaluación completa inicial para diagnóstico fisioterapéutico.'),
+        (1, 'Consulta General', 60, 65000, 'Evaluación completa inicial para diagnóstico fisioterapéutico.'),
         (2, 'Valoración por fisioterapia + ecografía especializada', 60, 85000, 'Diagnóstico preciso mediante tecnología de ultrasonido.'),
         (3, 'Sesión de descarga muscular en piernas', 90, 75000, 'Recuperación muscular profunda enfocada en extremidades inferiores.'),
         (4, 'Terapia física avanzada y manejo del dolor', 60, 65000, 'Tratamiento integral para aliviar dolor y recuperar movilidad.'),

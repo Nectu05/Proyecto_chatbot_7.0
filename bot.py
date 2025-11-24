@@ -55,35 +55,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intent = ai_response.get('intent', 'general')
     suggested_ids = ai_response.get('suggestedServiceIds', [])
     
-    # Logic for Suggestions
-    reply_markup = None
-    if suggested_ids:
-        keyboard = []
-        for s_id in suggested_ids:
-            service = database.get_service_by_id(s_id)
-            if service:
-                keyboard.append([InlineKeyboardButton(service['nombre'], callback_data=f"view_service_{s_id}")])
-        
-        keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(message_text, reply_markup=reply_markup)
-    
     # Fallback: If AI mentions "sistema de gestión" but intent missed
     if "sistema de gestión" in message_text.lower() and intent == 'general':
         intent = 'check_appointment'
 
-    # Intent Handling
+    # --- INTENT HANDLING ---
+
+    # 1. Booking Request (Priority)
     if intent == 'booking_request':
-        if not suggested_ids:
-             # Show main menu of services
-             services = database.get_services()
-             keyboard = [[InlineKeyboardButton(s['nombre'], callback_data=f"view_service_{s['id']}")] for s in services]
-             reply_markup = InlineKeyboardMarkup(keyboard)
-             await update.message.reply_text("Selecciona un servicio para ver detalles:", reply_markup=reply_markup)
-             return CHOOSING_SERVICE
+        # Use AI's message but attach buttons
+        keyboard = []
+        # If suggestions exist, show them first
+        if suggested_ids:
+            for s_id in suggested_ids:
+                service = database.get_service_by_id(s_id)
+                if service:
+                    keyboard.append([InlineKeyboardButton(service['nombre'], callback_data=f"view_service_{s_id}")])
+            keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
+        else:
+            # Show main menu
+            services = database.get_services()
+            keyboard = [[InlineKeyboardButton(s['nombre'], callback_data=f"view_service_{s['id']}")] for s in services]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
         return CHOOSING_SERVICE
 
+    # 2. Management / Cancellation
     elif intent == 'check_appointment' or intent == 'cancellation' or intent == 'reschedule':
         await update.message.reply_text(
             "🆔 **Gestión de Citas**\n\n"
@@ -91,9 +89,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "_(Solo números, sin puntos ni guiones)_",
             parse_mode='Markdown'
         )
-        return ENTERING_ID_CANCEL # Reuse this state for both check and cancel for now
-        
-    return ConversationHandler.END
+        return ENTERING_ID_CANCEL 
+
+    # 3. General / Other (Default Gemini Response)
+    else:
+        # Logic for Suggestions (if any, though unlikely for general)
+        reply_markup = None
+        if suggested_ids:
+            keyboard = []
+            for s_id in suggested_ids:
+                service = database.get_service_by_id(s_id)
+                if service:
+                    keyboard.append([InlineKeyboardButton(service['nombre'], callback_data=f"view_service_{s_id}")])
+            keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
+        return ConversationHandler.END
+
+async def handle_booking_conversation_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles text input specifically during the CHOOSING_SERVICE state.
+    It sends the text to Gemini, replies, and then RE-SENDS the service buttons
+    to ensure the user doesn't get lost.
+    """
+    user_text = update.message.text
+    
+    # Send to Gemini
+    ai_response = send_message_to_gemini([], user_text)
+    message_text = ai_response.get('message', '')
+    suggested_ids = ai_response.get('suggestedServiceIds', [])
+    
+    # Construct Reply
+    # 1. The AI Answer
+    await update.message.reply_text(message_text, parse_mode='Markdown')
+    
+    # 2. Re-attach Service Buttons (Guidance)
+    keyboard = []
+    if suggested_ids:
+        for s_id in suggested_ids:
+            service = database.get_service_by_id(s_id)
+            if service:
+                keyboard.append([InlineKeyboardButton(service['nombre'], callback_data=f"view_service_{s_id}")])
+        keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
+    else:
+        services = database.get_services()
+        keyboard = [[InlineKeyboardButton(s['nombre'], callback_data=f"view_service_{s['id']}")] for s in services]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Send a small nudge message with the buttons
+    await update.message.reply_text(
+        "👇 **Continúa agendando aquí:**",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    
+    return CHOOSING_SERVICE
 
 # --- BOOKING FLOW ---
 
@@ -269,38 +321,33 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_DATE
 
 async def receive_date_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Fallback for manual entry if they ignore the calendar
-    date_text = update.message.text
-    if is_holiday(date_text):
-         await update.message.reply_text("❌ Es festivo/domingo. Intenta otra fecha:")
-         return CHOOSING_DATE
-    context.user_data['date'] = date_text
-    await update.message.reply_text("Hora (Ej: 14:00):")
+    # Warning for text input during Calendar state
+    await update.message.reply_text(
+        "⚠️ **Acción requerida**\n\n"
+        "Para continuar, por favor **selecciona una fecha directamente en el calendario** de arriba 👆.\n"
+        "Si no ves el calendario, escribe /cancel y vuelve a empezar.",
+        parse_mode='Markdown'
+    )
+    return CHOOSING_DATE
+
+async def receive_time_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Warning for text input during Time state
+    await update.message.reply_text(
+        "⚠️ **Acción requerida**\n\n"
+        "Por favor **selecciona una hora disponible** haciendo clic en los botones (🟢) de arriba 👆.\n"
+        "Si deseas cambiar la fecha, pulsa 'Volver'.",
+        parse_mode='Markdown'
+    )
     return CHOOSING_TIME
-
-async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    time_text = update.message.text
-    date_text = context.user_data['date']
-    slot_key = f"{date_text}_{time_text}"
-    
-    # Availability Checks
-    if database.check_availability(date_text, time_text) is False:
-        await update.message.reply_text("❌ Horario ocupado. Elige otro:")
-        return CHOOSING_TIME
-
-    if slot_key in slot_locks:
-        await update.message.reply_text("⏳ Alguien está reservando este horario. Elige otro:")
-        return CHOOSING_TIME
-    
-    slot_locks[slot_key] = True
-    context.user_data['time'] = time_text
-    
-    await update.message.reply_text("✅ Horario disponible.\n\nEscribe tu **Nombre Completo**:")
-    return ENTERING_NAME
 
 
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['name'] = update.message.text
+    name = update.message.text
+    if len(name) < 3 or name.isdigit():
+        await update.message.reply_text("⚠️ Por favor ingresa un **Nombre Completo** válido (solo letras).")
+        return ENTERING_NAME
+        
+    context.user_data['name'] = name
     await update.message.reply_text(
         "🆔 **Ingresa tu número de Cédula:**\n\n"
         "_(Solo números, sin puntos ni guiones)_",
@@ -309,7 +356,12 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ENTERING_ID
 
 async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['patient_id'] = update.message.text
+    patient_id = update.message.text
+    if not patient_id.isdigit():
+        await update.message.reply_text("⚠️ **Dato inválido**\n\nPor favor ingresa tu cédula **solo con números**, sin puntos, letras ni guiones.", parse_mode='Markdown')
+        return ENTERING_ID
+        
+    context.user_data['patient_id'] = patient_id
     await update.message.reply_text(
         "📱 **Ingresa tu número de Celular:**\n\n"
         "_(Para contactarte en caso de cambios)_",
@@ -318,7 +370,13 @@ async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ENTERING_PHONE
 
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['phone'] = update.message.text
+    phone = update.message.text
+    # Basic validation: allow digits, spaces, +, -
+    if not any(char.isdigit() for char in phone) or len(phone) < 7:
+        await update.message.reply_text("⚠️ **Número inválido**\n\nPor favor ingresa un número de celular válido (Ej: 3001234567).")
+        return ENTERING_PHONE
+
+    context.user_data['phone'] = phone
     
     s_id = context.user_data['service_id']
     service = database.get_service_by_id(s_id)
@@ -329,11 +387,18 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day_name = days_es[date_obj.weekday()]
     formatted_date = f"{day_name} {context.user_data['date']}"
     
+    # Escape Markdown Special Characters for User Input
+    def escape_md(text):
+        return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+
+    safe_name = escape_md(context.user_data['name'])
+    safe_phone = escape_md(context.user_data['phone'])
+    
     summary = (
         f"📝 **Confirmar Cita**\n\n"
-        f"👤 **Paciente:** {context.user_data['name']}\n"
+        f"👤 **Paciente:** {safe_name}\n"
         f"🆔 **Cédula:** {context.user_data['patient_id']}\n"
-        f"📱 **Celular:** {context.user_data['phone']}\n"
+        f"📱 **Celular:** {safe_phone}\n"
         f"🏥 **Servicio:** {service['nombre']}\n"
         f"📅 **Fecha:** {formatted_date}\n"
         f"🕒 **Hora:** {context.user_data['time']}\n\n"
@@ -405,7 +470,7 @@ async def receive_id_for_management(update: Update, context: ContextTypes.DEFAUL
         return ENTERING_ID_CANCEL # Stay in state to allow retry
         
     # Show appointments with Cancel buttons
-    msg = "📅 **Tus Citas:**\nSelecciona una para cancelar (mínimo 24h antes):"
+    msg = "📅 **Tus Citas Activas:**\nSelecciona una cita de la lista si deseas cancelarla o cambiar el horario.\n_(Recuerda que debes hacerlo con al menos un día de antelación)_"
     keyboard = []
     now = datetime.now()
     
@@ -542,14 +607,17 @@ if __name__ == '__main__':
             MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
         ],
         states={
-            CHOOSING_SERVICE: [CallbackQueryHandler(button_click)],
+            CHOOSING_SERVICE: [
+                CallbackQueryHandler(button_click),
+                MessageHandler(filters.TEXT & (~filters.COMMAND), handle_booking_conversation_text)
+            ],
             CHOOSING_DATE: [
                 CallbackQueryHandler(button_click),
                 MessageHandler(filters.TEXT & (~filters.COMMAND), receive_date_manual)
             ],
             CHOOSING_TIME: [
                 CallbackQueryHandler(button_click), # Handles time_ and confirm_time_
-                MessageHandler(filters.TEXT, receive_time) # Keep fallback for now
+                MessageHandler(filters.TEXT, receive_time_manual) # Warning for text
             ],
             ENTERING_NAME: [MessageHandler(filters.TEXT, receive_name)],
             ENTERING_ID: [MessageHandler(filters.TEXT, receive_id)],
