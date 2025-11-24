@@ -232,11 +232,12 @@ def get_daily_appointments(date):
     
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT a.id, a.patient_name, s.nombre as service_name, s.precio, a.payment_status, a.payment_method, a.payment_amount
+        SELECT a.id, a.patient_name, a.patient_id, s.nombre as service_name, s.precio, a.appointment_time, a.status, a.payment_status, a.payment_method, a.payment_amount
         FROM Appointments a
         JOIN Services s ON a.service_id = s.id
-        WHERE a.appointment_date = ? AND a.status = 'confirmed'
-    """, date)
+        WHERE a.appointment_date = ?
+        ORDER BY a.appointment_time ASC
+    """, (date,))
     
     rows = cursor.fetchall()
     appointments = []
@@ -244,8 +245,44 @@ def get_daily_appointments(date):
         appointments.append({
             "id": row.id,
             "patient_name": row.patient_name,
+            "patient_id": row.patient_id,
             "service_name": row.service_name,
             "price": float(row.precio),
+            "time": str(row.appointment_time),
+            "status": row.status,
+            "payment_status": row.payment_status,
+            "payment_method": row.payment_method,
+            "payment_amount": float(row.payment_amount) if row.payment_amount else 0.0
+        })
+        
+    conn.close()
+    return appointments
+
+def get_appointments_by_range(start_date, end_date):
+    conn = get_db_connection()
+    if not conn: return []
+    
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT a.id, a.patient_name, a.patient_id, s.nombre as service_name, s.precio, a.appointment_date, a.appointment_time, a.status, a.payment_status, a.payment_method, a.payment_amount
+        FROM Appointments a
+        JOIN Services s ON a.service_id = s.id
+        WHERE a.appointment_date >= ? AND a.appointment_date <= ?
+        ORDER BY a.appointment_date ASC, a.appointment_time ASC
+    """, (start_date, end_date))
+    
+    rows = cursor.fetchall()
+    appointments = []
+    for row in rows:
+        appointments.append({
+            "id": row.id,
+            "patient_name": row.patient_name,
+            "patient_id": row.patient_id,
+            "service_name": row.service_name,
+            "price": float(row.precio),
+            "date": str(row.appointment_date),
+            "time": str(row.appointment_time),
+            "status": row.status,
             "payment_status": row.payment_status,
             "payment_method": row.payment_method,
             "payment_amount": float(row.payment_amount) if row.payment_amount else 0.0

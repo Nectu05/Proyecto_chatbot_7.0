@@ -1,28 +1,50 @@
 import reports
-from datetime import datetime
-import os
+from datetime import datetime, timedelta
 
 def main():
-    print("📊 Generando Reporte Diario...")
+    print("=========================================")
+    print("   GENERADOR DE REPORTES FINANCIEROS")
+    print("=========================================")
+    print("1. Reporte de HOY")
+    print("2. Reporte de la SEMANA (Últimos 7 días)")
+    print("3. Reporte del MES (Mes actual)")
+    print("4. Rango Personalizado")
+    print("=========================================")
     
-    # Default to today
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    choice = input("Selecciona una opción (1-4): ")
     
-    # Optional: Allow user to input date
-    user_input = input(f"Presiona ENTER para generar el reporte de hoy ({date_str}) o escribe una fecha (YYYY-MM-DD): ")
-    if user_input.strip():
-        date_str = user_input.strip()
+    start_date = None
+    end_date = None
+    
+    if choice == '1':
+        start_date = datetime.now().strftime("%Y-%m-%d")
+        end_date = start_date
         
-    pdf_path = reports.generate_daily_report(date_str)
-    
-    if pdf_path and os.path.exists(pdf_path):
-        print(f"\n✅ Reporte generado exitosamente en:\n{pdf_path}")
-        # Try to open the folder
-        os.startfile(os.path.dirname(pdf_path))
+    elif choice == '2':
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        
+    elif choice == '3':
+        now = datetime.now()
+        start_date = now.replace(day=1).strftime("%Y-%m-%d")
+        end_date = now.strftime("%Y-%m-%d")
+        
+    elif choice == '4':
+        print("\nFormato de fecha: YYYY-MM-DD (Ej: 2023-10-27)")
+        start_date = input("Fecha Inicio: ")
+        end_date = input("Fecha Fin: ")
+        
     else:
-        print("\n❌ Error al generar el reporte.")
-        
-    input("\nPresiona ENTER para salir...")
+        print("Opción inválida.")
+        return
+
+    print(f"\nGenerando reporte desde {start_date} hasta {end_date}...")
+    try:
+        filepath = reports.generate_financial_report(start_date, end_date)
+        print(f"\n✅ ¡Reporte generado con éxito!")
+        print(f"📂 Ubicación: {filepath}")
+    except Exception as e:
+        print(f"\n❌ Error al generar el reporte: {e}")
 
 if __name__ == "__main__":
     main()

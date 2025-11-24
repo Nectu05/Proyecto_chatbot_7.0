@@ -14,7 +14,7 @@ response_schema = {
         "message": {"type": "STRING"},
         "intent": {
             "type": "STRING",
-            "enum": ['greeting', 'symptom_analysis', 'show_all_services', 'booking_request', 'cancellation', 'price_inquiry', 'general', 'invoice_analysis', 'check_appointment', 'revenue_report', 'reschedule']
+            "enum": ['greeting', 'symptom_analysis', 'show_all_services', 'booking_request', 'cancellation', 'price_inquiry', 'general', 'invoice_analysis', 'check_appointment', 'revenue_report', 'reschedule', 'location_inquiry']
         },
         "suggestedServiceIds": {
             "type": "ARRAY",
