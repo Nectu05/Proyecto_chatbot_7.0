@@ -62,8 +62,8 @@ def create_appointment(patient_name, patient_id, patient_phone, service_id, date
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO Appointments (id, patient_name, patient_id, patient_phone, service_id, appointment_date, appointment_time, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed')
+            INSERT INTO Appointments (id, patient_name, patient_id, patient_phone, service_id, appointment_date, appointment_time, status, payment_status, payment_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 'pending', 0)
         """, (appointment_id, patient_name, patient_id, patient_phone, service_id, date, time))
         conn.commit()
         return appointment_id
@@ -206,3 +206,50 @@ def update_appointment(appointment_id, new_date, new_time):
         return False
     finally:
         conn.close()
+
+def update_payment_status(appointment_id, status, method, proof_path, amount):
+    conn = get_db_connection()
+    if not conn: return False
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE Appointments 
+            SET payment_status = ?, payment_method = ?, payment_proof = ?, payment_amount = ?
+            WHERE id = ?
+        """, (status, method, proof_path, amount, appointment_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating payment: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_daily_appointments(date):
+    conn = get_db_connection()
+    if not conn: return []
+    
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT a.id, a.patient_name, s.nombre as service_name, s.precio, a.payment_status, a.payment_method, a.payment_amount
+        FROM Appointments a
+        JOIN Services s ON a.service_id = s.id
+        WHERE a.appointment_date = ? AND a.status = 'confirmed'
+    """, date)
+    
+    rows = cursor.fetchall()
+    appointments = []
+    for row in rows:
+        appointments.append({
+            "id": row.id,
+            "patient_name": row.patient_name,
+            "service_name": row.service_name,
+            "price": float(row.precio),
+            "payment_status": row.payment_status,
+            "payment_method": row.payment_method,
+            "payment_amount": float(row.payment_amount) if row.payment_amount else 0.0
+        })
+        
+    conn.close()
+    return appointments

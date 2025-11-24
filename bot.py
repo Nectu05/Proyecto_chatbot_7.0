@@ -1,6 +1,7 @@
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler
+from telegram import constants
 from config import TELEGRAM_TOKEN, CLINIC_INFO
 from gemini_service import send_message_to_gemini
 import database
@@ -8,6 +9,8 @@ import holidays
 from datetime import datetime, timedelta
 from cachetools import TTLCache
 from utils import create_calendar, create_time_slots_keyboard
+import reports
+import os
 
 # Logging setup
 logging.basicConfig(
@@ -30,8 +33,9 @@ slot_locks = TTLCache(maxsize=100, ttl=600)
     ENTERING_ID,
     ENTERING_PHONE,
     CONFIRMING,
-    ENTERING_ID_CANCEL # New state for cancellation flow
-) = range(8)
+    ENTERING_ID_CANCEL, # New state for cancellation flow
+    ENTERING_ID_PAYMENT # New state for payment flow
+) = range(9)
 
 def is_holiday(date_str):
     try:
@@ -45,12 +49,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hola, soy {CLINIC_INFO['botName']}, asistente virtual del {CLINIC_INFO['name']}. ¿En qué puedo ayudarte hoy?"
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    
-    # Send to Gemini
-    ai_response = send_message_to_gemini([], user_text)
-    
+async def process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE, ai_response: dict):
+    """
+    Unified logic to handle AI responses (text, buttons, intents)
+    Used by handle_message, handle_voice, and handle_photo
+    """
     message_text = ai_response.get('message', '')
     intent = ai_response.get('intent', 'general')
     suggested_ids = ai_response.get('suggestedServiceIds', [])
@@ -63,9 +66,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. Booking Request (Priority)
     if intent == 'booking_request':
-        # Use AI's message but attach buttons
         keyboard = []
-        # If suggestions exist, show them first
         if suggested_ids:
             for s_id in suggested_ids:
                 service = database.get_service_by_id(s_id)
@@ -73,7 +74,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     keyboard.append([InlineKeyboardButton(service['nombre'], callback_data=f"view_service_{s_id}")])
             keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
         else:
-            # Show main menu
             services = database.get_services()
             keyboard = [[InlineKeyboardButton(s['nombre'], callback_data=f"view_service_{s['id']}")] for s in services]
         
@@ -91,9 +91,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ENTERING_ID_CANCEL 
 
-    # 3. General / Other (Default Gemini Response)
+    # 3. Invoice / Payment Analysis
+    elif intent == 'invoice_analysis':
+        data = ai_response.get('extractedInvoiceData', {})
+        amount = data.get('amount', 0)
+        date = data.get('date', 'Desconocida')
+        
+        context.user_data['payment_amount'] = amount
+        context.user_data['payment_date'] = date
+        
+        await update.message.reply_text(
+            f"💰 **Pago Detectado**\n\nValor: ${amount:,.0f}\nFecha: {date}\n\n"
+            f"¿A qué cita corresponde este pago? Por favor escribe el número de cédula del paciente para buscar sus citas:",
+            parse_mode='Markdown'
+        )
+        return ENTERING_ID_PAYMENT
+
+    # 4. General / Other
     else:
-        # Logic for Suggestions (if any, though unlikely for general)
         reply_markup = None
         if suggested_ids:
             keyboard = []
@@ -106,6 +121,96 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(message_text, reply_markup=reply_markup)
         return ConversationHandler.END
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    
+    # Send Typing Action
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
+    
+    # Send to Gemini
+    ai_response = send_message_to_gemini([], user_text)
+    
+    # Process Response
+    return await process_ai_response(update, context, ai_response)
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Get the photo file
+    photo_file = await update.message.photo[-1].get_file()
+    photo_bytes = await photo_file.download_as_bytearray()
+    
+    # Send Typing Action
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
+    
+    # Send to Gemini
+    ai_response = send_message_to_gemini([], update.message.caption or "", image_base64=photo_bytes)
+    
+    # Process Response
+    return await process_ai_response(update, context, ai_response)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Get voice file
+    voice_file = await update.message.voice.get_file()
+    voice_bytes = await voice_file.download_as_bytearray()
+    
+    # Send Typing Action (or Record Voice)
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
+    
+    # Send to Gemini
+    ai_response = send_message_to_gemini([], "", audio_base64=voice_bytes)
+    
+    transcription = ai_response.get('audioTranscription', '')
+    
+    # Reply with transcription first (optional, but good for feedback)
+    if transcription:
+        await update.message.reply_text(f"🎤 *Transkripción:* \"{transcription}\"", parse_mode='Markdown')
+    
+    # Process Response (Buttons, Intents, etc.)
+    return await process_ai_response(update, context, ai_response)
+
+# --- PAYMENT FLOW ---
+
+async def receive_id_for_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    patient_id = await get_text_or_transcription(update, context)
+    if not patient_id: return ENTERING_ID_PAYMENT
+    
+    # Clean input
+    patient_id = ''.join(filter(str.isdigit, patient_id))
+
+    if not patient_id:
+        await update.message.reply_text("⚠️ Cédula inválida. Intenta de nuevo.")
+        return ENTERING_ID_PAYMENT
+
+    apps = database.get_appointments_by_patient(patient_id)
+    if not apps:
+        await update.message.reply_text("No encontré citas para esta cédula.")
+        return ConversationHandler.END
+        
+    # Show appointments to link payment
+    keyboard = []
+    for app in apps:
+        btn_text = f"{app['date']} {app['time']} - {app['service_name']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pay_{app['id']}")])
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Selecciona la cita a pagar:", reply_markup=reply_markup)
+    return ENTERING_ID_PAYMENT
+
+async def confirm_payment_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("pay_"):
+        app_id = query.data.split("_")[1]
+        amount = context.user_data.get('payment_amount', 0)
+        
+        # Update DB
+        if database.update_payment_status(app_id, 'paid', 'transfer', 'digital_proof', amount):
+            await query.edit_message_text(f"✅ **Pago Registrado**\n\nSe ha abonado ${amount:,.0f} a la cita.")
+        else:
+            await query.edit_message_text("❌ Error al registrar pago.")
+            
+    return ConversationHandler.END
 
 async def handle_booking_conversation_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -341,63 +446,26 @@ async def receive_time_manual(update: Update, context: ContextTypes.DEFAULT_TYPE
     return CHOOSING_TIME
 
 
-async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text
-    if len(name) < 3 or name.isdigit():
-        await update.message.reply_text("⚠️ Por favor ingresa un **Nombre Completo** válido (solo letras).")
-        return ENTERING_NAME
-        
-    context.user_data['name'] = name
-    await update.message.reply_text(
-        "🆔 **Ingresa tu número de Cédula:**\n\n"
-        "_(Solo números, sin puntos ni guiones)_",
-        parse_mode='Markdown'
-    )
-    return ENTERING_ID
-
-async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    patient_id = update.message.text
-    if not patient_id.isdigit():
-        await update.message.reply_text("⚠️ **Dato inválido**\n\nPor favor ingresa tu cédula **solo con números**, sin puntos, letras ni guiones.", parse_mode='Markdown')
-        return ENTERING_ID
-        
-    context.user_data['patient_id'] = patient_id
-    await update.message.reply_text(
-        "📱 **Ingresa tu número de Celular:**\n\n"
-        "_(Para contactarte en caso de cambios)_",
-        parse_mode='Markdown'
-    )
-    return ENTERING_PHONE
-
-async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone = update.message.text
-    # Basic validation: allow digits, spaces, +, -
-    if not any(char.isdigit() for char in phone) or len(phone) < 7:
-        await update.message.reply_text("⚠️ **Número inválido**\n\nPor favor ingresa un número de celular válido (Ej: 3001234567).")
-        return ENTERING_PHONE
-
-    context.user_data['phone'] = phone
-    
+async def show_confirmation_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s_id = context.user_data['service_id']
     service = database.get_service_by_id(s_id)
     
-    # Format Date with Day Name (Spanish)
+    # Format Date
     date_obj = datetime.strptime(context.user_data['date'], "%Y-%m-%d")
     days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
     day_name = days_es[date_obj.weekday()]
     formatted_date = f"{day_name} {context.user_data['date']}"
     
-    # Escape Markdown Special Characters for User Input
     def escape_md(text):
         return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
 
-    safe_name = escape_md(context.user_data['name'])
-    safe_phone = escape_md(context.user_data['phone'])
+    safe_name = escape_md(context.user_data.get('name', ''))
+    safe_phone = escape_md(context.user_data.get('phone', ''))
     
     summary = (
         f"📝 **Confirmar Cita**\n\n"
         f"👤 **Paciente:** {safe_name}\n"
-        f"🆔 **Cédula:** {context.user_data['patient_id']}\n"
+        f"🪪 **Cédula:** {context.user_data.get('patient_id', '')}\n"
         f"📱 **Celular:** {safe_phone}\n"
         f"🏥 **Servicio:** {service['nombre']}\n"
         f"📅 **Fecha:** {formatted_date}\n"
@@ -407,12 +475,99 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("✅ SÍ, Confirmar Cita", callback_data="confirm_booking_yes")],
+        [InlineKeyboardButton("👤 Editar Nombre", callback_data="edit_name")],
+        [InlineKeyboardButton("🪪 Editar Cédula", callback_data="edit_id")],
+        [InlineKeyboardButton("📱 Editar Celular", callback_data="edit_phone")],
         [InlineKeyboardButton("❌ Cancelar", callback_data="cancel_booking")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(summary, reply_markup=reply_markup, parse_mode='Markdown')
+    if update.callback_query:
+        await update.callback_query.edit_message_text(summary, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(summary, reply_markup=reply_markup, parse_mode='Markdown')
+        
+    context.user_data['is_editing'] = False
     return CONFIRMING
+
+async def get_text_or_transcription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.voice:
+        # Send Typing
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=constants.ChatAction.TYPING)
+        
+        voice_file = await update.message.voice.get_file()
+        voice_bytes = await voice_file.download_as_bytearray()
+        
+        ai_response = send_message_to_gemini([], "", audio_base64=voice_bytes)
+        transcription = ai_response.get('audioTranscription', '')
+        
+        if not transcription:
+            await update.message.reply_text("⚠️ No pude entender el audio. Por favor intenta de nuevo o escríbelo.")
+            return None
+            
+        await update.message.reply_text(f"🎤 *Entendido:* \"{transcription}\"", parse_mode='Markdown')
+        return transcription
+    else:
+        return update.message.text
+
+async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = await get_text_or_transcription(update, context)
+    if not name: return ENTERING_NAME
+    
+    # Clean up transcription (remove punctuation if needed, but simple check is enough)
+    if len(name) < 3: # Relaxed check for audio
+        await update.message.reply_text("⚠️ Por favor ingresa un **Nombre Completo** válido.")
+        return ENTERING_NAME
+        
+    context.user_data['name'] = name
+    
+    if context.user_data.get('is_editing'):
+        return await show_confirmation_summary(update, context)
+
+    await update.message.reply_text(
+        "🆔 **Ingresa tu número de Cédula:**\n\n"
+        "_(Solo números, sin puntos ni guiones)_",
+        parse_mode='Markdown'
+    )
+    return ENTERING_ID
+
+async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    patient_id = await get_text_or_transcription(update, context)
+    if not patient_id: return ENTERING_ID
+    
+    # Remove spaces or non-digits from transcription
+    patient_id = ''.join(filter(str.isdigit, patient_id))
+    
+    if not patient_id:
+        await update.message.reply_text("⚠️ **Dato inválido**\n\nPor favor ingresa tu cédula **solo con números**.", parse_mode='Markdown')
+        return ENTERING_ID
+        
+    context.user_data['patient_id'] = patient_id
+    
+    if context.user_data.get('is_editing'):
+        return await show_confirmation_summary(update, context)
+
+    await update.message.reply_text(
+        "📱 **Ingresa tu número de Celular:**\n\n"
+        "_(Para contactarte en caso de cambios)_",
+        parse_mode='Markdown'
+    )
+    return ENTERING_PHONE
+
+async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    phone = await get_text_or_transcription(update, context)
+    if not phone: return ENTERING_PHONE
+    
+    # Clean phone
+    phone = ''.join(filter(str.isdigit, phone))
+    
+    if len(phone) < 7:
+        await update.message.reply_text("⚠️ **Número inválido**\n\nPor favor ingresa un número de celular válido.")
+        return ENTERING_PHONE
+
+    context.user_data['phone'] = phone
+    
+    return await show_confirmation_summary(update, context)
 
 async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -449,6 +604,21 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         await query.edit_message_text(msg, parse_mode='Markdown')
+    elif query.data == "edit_name":
+        context.user_data['is_editing'] = True
+        await query.edit_message_text("👤 Por favor ingresa tu **Nombre Completo** nuevamente:")
+        return ENTERING_NAME
+        
+    elif query.data == "edit_id":
+        context.user_data['is_editing'] = True
+        await query.edit_message_text("🪪 Por favor ingresa tu **Cédula** nuevamente (solo números):")
+        return ENTERING_ID
+        
+    elif query.data == "edit_phone":
+        context.user_data['is_editing'] = True
+        await query.edit_message_text("📱 Por favor ingresa tu **Celular** nuevamente:")
+        return ENTERING_PHONE
+        
     else:
         await query.edit_message_text("❌ Cita cancelada. Puedes volver a empezar cuando quieras.")
     return ConversationHandler.END
@@ -456,17 +626,27 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- MANAGEMENT FLOW ---
 
 async def receive_id_for_management(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    patient_id = update.message.text
+    patient_id = await get_text_or_transcription(update, context)
+    if not patient_id: return ENTERING_ID_CANCEL
+    
+    # Check for Exit Keywords
+    exit_keywords = ["gracias", "listo", "salir", "cancelar", "terminar", "ya no", "adios"]
+    if any(keyword in patient_id.lower() for keyword in exit_keywords):
+        await update.message.reply_text("✅ Entendido. Si necesitas algo más, aquí estaré.")
+        return ConversationHandler.END
+    
+    # Clean input
+    patient_id = ''.join(filter(str.isdigit, patient_id))
     
     # Validate Numeric ID
-    if not patient_id.isdigit():
-        await update.message.reply_text("⚠️ Por favor ingresa un número de cédula válido (solo números).")
+    if not patient_id:
+        await update.message.reply_text("⚠️ Por favor ingresa un número de cédula válido (solo números) o escribe 'Salir' para terminar.")
         return ENTERING_ID_CANCEL
 
     apps = database.get_appointments_by_patient(patient_id)
     
     if not apps:
-        await update.message.reply_text("No encontré citas con esa cédula. Intenta de nuevo o escribe /cancel para salir.")
+        await update.message.reply_text("No encontré citas con esa cédula. Intenta de nuevo o escribe 'Salir'.")
         return ENTERING_ID_CANCEL # Stay in state to allow retry
         
     # Show appointments with Cancel buttons
@@ -494,6 +674,9 @@ async def receive_id_for_management(update: Update, context: ContextTypes.DEFAUL
             
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
     
+    # Add Finish Button
+    keyboard.append([InlineKeyboardButton("✅ Terminar / Listo", callback_data="finish_management")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
     return ENTERING_ID_CANCEL
@@ -504,6 +687,10 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
     
     data = query.data
     
+    if data == "finish_management":
+        await query.edit_message_text("✅ ¡Entendido! Si necesitas algo más, no dudes en preguntar.")
+        return ConversationHandler.END
+
     if data.startswith("manage_"):
         app_id = data.split("_")[1]
         context.user_data['manage_app_id'] = app_id
@@ -619,14 +806,18 @@ if __name__ == '__main__':
                 CallbackQueryHandler(button_click), # Handles time_ and confirm_time_
                 MessageHandler(filters.TEXT, receive_time_manual) # Warning for text
             ],
-            ENTERING_NAME: [MessageHandler(filters.TEXT, receive_name)],
-            ENTERING_ID: [MessageHandler(filters.TEXT, receive_id)],
-            ENTERING_PHONE: [MessageHandler(filters.TEXT, receive_phone)],
+            ENTERING_NAME: [MessageHandler(filters.TEXT | filters.VOICE, receive_name)],
+            ENTERING_ID: [MessageHandler(filters.TEXT | filters.VOICE, receive_id)],
+            ENTERING_PHONE: [MessageHandler(filters.TEXT | filters.VOICE, receive_phone)],
             CONFIRMING: [CallbackQueryHandler(confirm_booking)],
             
             ENTERING_ID_CANCEL: [
-                MessageHandler(filters.TEXT & (~filters.COMMAND), receive_id_for_management),
+                MessageHandler(filters.TEXT | filters.VOICE, receive_id_for_management),
                 CallbackQueryHandler(manage_appointment_menu)
+            ],
+            ENTERING_ID_PAYMENT: [
+                MessageHandler(filters.TEXT | filters.VOICE, receive_id_for_payment),
+                CallbackQueryHandler(confirm_payment_selection)
             ]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
@@ -634,6 +825,9 @@ if __name__ == '__main__':
 
     application.add_handler(booking_conv)
     application.add_handler(CommandHandler('start', start))
+    # application.add_handler(CommandHandler('reporte', generate_report_command)) # Removed for security
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     
     print("Bot is running...")
     application.run_polling()

@@ -26,19 +26,19 @@ response_schema = {
                 "amount": {"type": "NUMBER"},
                 "date": {"type": "STRING"}
             }
-        }
+        },
+        "audioTranscription": {"type": "STRING"}
     },
     "required": ["message", "intent"]
 }
 
-def send_message_to_gemini(history, text_message, image_base64=None):
+def send_message_to_gemini(history, text_message, image_base64=None, audio_base64=None):
     try:
-        model_id = 'gemini-2.5-flash' # User requested specific version
+        model_id = 'gemini-2.5-flash' 
 
         # Context Injection
         now = datetime.datetime.now()
-        day_name = now.strftime("%A") # English day name, might need Spanish translation mapping if strict
-        # Simple Spanish mapping for better context
+        day_name = now.strftime("%A") 
         days_es = {"Monday": "Lunes", "Tuesday": "Martes", "Wednesday": "Miércoles", "Thursday": "Jueves", "Friday": "Viernes", "Saturday": "Sábado", "Sunday": "Domingo"}
         day_name_es = days_es.get(day_name, day_name)
         date_string = now.strftime("%Y-%m-%d")
@@ -49,22 +49,31 @@ def send_message_to_gemini(history, text_message, image_base64=None):
         CONTEXTO TEMPORAL OBLIGATORIO:
         - HOY es: {day_name_es.upper()}, {date_string}.
         - Si el usuario dice "mañana", se refiere al día siguiente.
+        
+        INSTRUCCIONES DE VISIÓN Y AUDIO:
+        - Si recibes una IMAGEN de un comprobante de pago (Nequi, Daviplata, Bancolombia, efectivo), extrae el valor y la fecha.
+          - Intent: 'invoice_analysis'
+          - extractedInvoiceData: {{ "amount": 50000, "date": "2023-10-27" }}
+        - Si recibes un AUDIO, transcríbelo y responde como si fuera texto.
+          - audioTranscription: "Texto transcrito del audio"
         """
 
         # Prepare Content
-        contents = []
-        
-        # Add History (simplified for now, usually we pass chat session)
-        # In this stateless function, we might just append history if provided in correct format
-        # For now, let's assume we send the current message with system instruction
-        
         parts = []
+        
         if image_base64:
              parts.append(types.Part.from_bytes(data=image_base64, mime_type="image/jpeg"))
-             parts.append(types.Part.from_text(text="Analiza esta imagen. Si es una factura médica, extrae el monto total y la fecha."))
+             parts.append(types.Part.from_text(text="Analiza esta imagen. Si es un comprobante de pago, extrae el monto y fecha."))
+
+        if audio_base64:
+             parts.append(types.Part.from_bytes(data=audio_base64, mime_type="audio/ogg")) # Telegram voice notes are usually OGG
+             parts.append(types.Part.from_text(text="Transcribe este audio y responde a la intención del usuario."))
 
         if text_message:
             parts.append(types.Part.from_text(text=text_message))
+
+        if not parts:
+            return {"message": "No entendí, por favor envía texto, imagen o audio.", "intent": "general"}
 
         response = client.models.generate_content(
             model=model_id,

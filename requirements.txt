@@ -4,3 +4,4 @@ pyodbc==5.0.1
 python-dotenv==1.0.0
 holidays==0.41
 cachetools==5.3.3
+reportlab==4.0.0
