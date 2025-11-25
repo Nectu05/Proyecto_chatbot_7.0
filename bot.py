@@ -11,6 +11,13 @@ from cachetools import TTLCache
 from utils import create_calendar, create_time_slots_keyboard
 import reports
 import os
+import re
+
+# Helper to escape Markdown special characters
+def escape_markdown(text):
+    """Helper function to escape Telegram Markdown special characters."""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 # Logging setup
 logging.basicConfig(
@@ -126,7 +133,20 @@ async def process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE
                 keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"view_service_{s['id']}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        # Escape the message text to prevent Markdown parsing errors
+        # But we want to keep some formatting if Gemini sends it correctly (e.g. bold).
+        # However, Gemini might send "mixed" markdown that Telegram hates.
+        # For safety, let's try to send as Markdown but if it fails, fallback to plain text?
+        # Or better: Ask Gemini to be careful?
+        # Actually, the error is "Can't parse entities".
+        # Let's use a try-except block for the send, and if it fails, send as plain text.
+        
+        try:
+            await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        except Exception as e:
+            print(f"Markdown Error: {e}. Falling back to plain text.")
+            await update.message.reply_text(message_text, reply_markup=reply_markup)
+            
         return CHOOSING_SERVICE
 
     # 2. Management / Cancellation
@@ -607,6 +627,11 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = await get_text_or_transcription(update, context)
     if not name: return ENTERING_NAME
     
+    # Validate Name (Letters and spaces only)
+    if not re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+$", name):
+        await update.message.reply_text("⚠️ El nombre no debe contener números ni caracteres especiales. Por favor escribe solo tu nombre. 🙏")
+        return ENTERING_NAME
+    
     context.user_data['name'] = name
     
     # Check if editing
@@ -628,8 +653,13 @@ async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patient_id = await get_text_or_transcription(update, context)
     if not patient_id: return ENTERING_ID
     
-    # Basic validation (digits only)
-    patient_id = ''.join(filter(str.isdigit, patient_id))
+    # Strict validation (digits and spaces only)
+    if not re.match(r"^[\d\s]+$", patient_id):
+        await update.message.reply_text("⚠️ La cédula solo debe contener números. Por favor intenta de nuevo sin puntos ni letras. 🙏")
+        return ENTERING_ID
+        
+    # Remove spaces for storage
+    patient_id = patient_id.replace(' ', '')
     
     if not patient_id:
         await update.message.reply_text("⚠️ Por favor ingresa un número de cédula válido. 🙏")
@@ -654,6 +684,14 @@ async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = await get_text_or_transcription(update, context)
     if not phone: return ENTERING_PHONE
+    
+    # Validate Phone (Digits, spaces, and optional + at start)
+    if not re.match(r"^\+?[\d\s]+$", phone):
+        await update.message.reply_text("⚠️ El celular solo debe contener números (o '+' al inicio). Por favor intenta de nuevo. 📞")
+        return ENTERING_PHONE
+    
+    # Remove spaces for storage
+    phone = phone.replace(' ', '')
     
     context.user_data['phone'] = phone
     
