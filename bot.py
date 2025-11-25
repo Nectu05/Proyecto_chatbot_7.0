@@ -150,7 +150,7 @@ async def process_ai_response(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         await update.message.reply_text(
             f"💰 **Pago Detectado**\n\nValor: ${amount:,.0f}\nFecha: {date}\n\n"
-            f"¿A qué cita corresponde este pago? Por favor escribe el número de cédula del paciente para buscar sus citas:",
+            f"¿A qué cita corresponde este pago? 🤔 Por favor escribe el número de cédula del paciente para buscar sus citas:",
             parse_mode='Markdown'
         )
         return ENTERING_ID_PAYMENT
@@ -236,12 +236,12 @@ async def receive_id_for_payment(update: Update, context: ContextTypes.DEFAULT_T
     patient_id = ''.join(filter(str.isdigit, patient_id))
 
     if not patient_id:
-        await update.message.reply_text("⚠️ Cédula inválida. Intenta de nuevo.")
+        await update.message.reply_text("⚠️ Uy, esa cédula no parece válida. Intenta de nuevo por favor. 🙏")
         return ENTERING_ID_PAYMENT
 
     apps = database.get_appointments_by_patient(patient_id)
     if not apps:
-        await update.message.reply_text("No encontré citas para esta cédula.")
+        await update.message.reply_text("😔 No encontré citas para esta cédula. ¿Seguro que está bien escrita?")
         return ConversationHandler.END
         
     # Show appointments to link payment
@@ -251,7 +251,7 @@ async def receive_id_for_payment(update: Update, context: ContextTypes.DEFAULT_T
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"pay_{app['id']}")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Selecciona la cita a pagar:", reply_markup=reply_markup)
+    await update.message.reply_text("Selecciona la cita a pagar de la lista: 👇", reply_markup=reply_markup)
     return ENTERING_ID_PAYMENT
 
 async def confirm_payment_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -264,9 +264,9 @@ async def confirm_payment_selection(update: Update, context: ContextTypes.DEFAUL
         
         # Update DB
         if database.update_payment_status(app_id, 'paid', 'transfer', 'digital_proof', amount):
-            await query.edit_message_text(f"✅ **Pago Registrado**\n\nSe ha abonado ${amount:,.0f} a la cita.")
+            await query.edit_message_text(f"✅ **¡Pago Registrado!** 🎉\n\nSe ha abonado ${amount:,.0f} a la cita. ¡Gracias!")
         else:
-            await query.edit_message_text("❌ Error al registrar pago.")
+            await query.edit_message_text("❌ Hubo un error al registrar el pago. Lo siento 😔")
             
     return ConversationHandler.END
 
@@ -309,7 +309,7 @@ async def handle_booking_conversation_text(update: Update, context: ContextTypes
     
     # Send a small nudge message with the buttons
     await update.message.reply_text(
-        "👇 **Continúa agendando aquí:**",
+        "👇 **Continúa agendando aquí:** ✨",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -334,7 +334,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"view_service_{s['id']}")])
             
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("📂 **Servicios Disponibles**\nSelecciona uno para ver más información:", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text("📂 **Servicios Disponibles**\nSelecciona uno para ver más información: 👇", reply_markup=reply_markup, parse_mode='Markdown')
         return CHOOSING_SERVICE
 
     # 1.5 Back to Suggestions
@@ -350,7 +350,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard.append([InlineKeyboardButton("📋 Ver todos los servicios", callback_data="show_all_services")])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("👇 **Aquí tienes los servicios sugeridos:**", reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text("👇 **Aquí tienes los servicios sugeridos:** ✨", reply_markup=reply_markup, parse_mode='Markdown')
         return CHOOSING_SERVICE
 
     # 2. View Service Details (The "Card")
@@ -409,14 +409,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Validate Holiday
         if is_holiday(date_text):
-             await query.answer("❌ Domingo/Festivo no disponible", show_alert=True)
+             await query.answer("❌ Domingo/Festivo no disponible. ¡Descansamos para atenderte mejor! 😴", show_alert=True)
              return CHOOSING_DATE 
         
         # Validate 1-day advance notice (Backend Check)
         selected_date = datetime.strptime(date_text, "%Y-%m-%d").date()
         now = datetime.now().date()
         if selected_date <= now:
-             await query.answer("❌ Debes agendar con 1 día de anticipación.", show_alert=True)
+             await query.answer("❌ Debes agendar con 1 día de anticipación. ¡Planifiquemos con tiempo! 🗓️", show_alert=True)
              return CHOOSING_DATE
              
         # Store Date
@@ -438,7 +438,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Double Check Availability (Race Condition)
         date_text = context.user_data['date']
         if not database.check_availability(date_text, time_text):
-            await query.answer("⚠️ Esa hora ya fue ocupada. Elige otra.", show_alert=True)
+            await query.answer("⚠️ Uy, esa hora ya fue ocupada. Elige otra por favor. 🙏", show_alert=True)
             # Refresh slots
             time_keyboard = create_time_slots_keyboard(date_text, database.get_booked_slots(date_text))
             await query.edit_message_text(
@@ -511,7 +511,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Double Check Availability
         if not database.check_availability(date_text, time_text):
-            await query.answer("⚠️ Lo sentimos, alguien acaba de tomar este horario.", show_alert=True)
+            await query.answer("⚠️ Lo sentimos, alguien acaba de tomar este horario. 🏃💨", show_alert=True)
             booked = database.get_booked_slots(date_text)
             time_markup = create_time_slots_keyboard(date_text, booked)
             await query.edit_message_text("Por favor selecciona otra hora:", reply_markup=time_markup)
@@ -522,7 +522,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             f"✅ Fecha: {date_text}\n✅ Hora: {time_text}\n\n"
-            "👤 **Escribe tu Nombre Completo:**\n"
+            "👤 **Escribe tu Nombre Completo:** ✍️\n"
             "_(Por favor escribe solo tu nombre, sin prefijos, puntos ni caracteres especiales)_\n\n"
             "🎙 _(O también puedes enviarme una nota de voz)_",
             parse_mode='Markdown'
@@ -532,7 +532,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 7. Finish Management (Exit)
     if data == "finish_management":
         await query.edit_message_text(
-            "✅ **Gestión finalizada**\n\n"
+            "✅ **Gestión finalizada** 🎉\n\n"
             "Si necesitas información sobre el consultorio, nuestros servicios, "
             "o cualquier otra consulta, no dudes en preguntar. "
             "Estoy aquí para ayudarte.\n\n"
@@ -566,7 +566,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await query.edit_message_text(msg, parse_mode='Markdown')
         else:
-            await query.edit_message_text("❌ Error al reprogramar. Intenta más tarde.")
+            await query.edit_message_text("❌ Error al reprogramar. Intenta más tarde. 😔")
             
         # Clean up
         context.user_data['is_rescheduling'] = False
@@ -616,7 +616,7 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CONFIRMING
         
     await update.message.reply_text(
-        f"Gusto en saludarte, {name}.\n\n"
+        f"¡Gusto en saludarte, {name}! 👋\n\n"
         "🪪 **Ahora escribe tu número de Cédula:**\n"
         "_(Solo números, sin puntos, comas ni guiones)_\n\n"
         "🎙 _(O dímelo por nota de voz)_",
@@ -632,7 +632,7 @@ async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     patient_id = ''.join(filter(str.isdigit, patient_id))
     
     if not patient_id:
-        await update.message.reply_text("⚠️ Por favor ingresa un número de cédula válido.")
+        await update.message.reply_text("⚠️ Por favor ingresa un número de cédula válido. 🙏")
         return ENTERING_ID
         
     context.user_data['patient_id'] = patient_id
@@ -644,7 +644,7 @@ async def receive_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CONFIRMING
         
     await update.message.reply_text(
-        "📱 **Por último, escribe tu número de Celular:**\n"
+        "📱 **Por último, escribe tu número de Celular:** 📞\n"
         "_(Solo números, sin puntos, comas ni guiones)_\n\n"
         "🎙 _(O dímelo por nota de voz)_",
         parse_mode='Markdown'
@@ -720,12 +720,12 @@ async def confirm_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
         else:
-            await query.edit_message_text("❌ Hubo un error al guardar la cita. Intenta de nuevo.")
+            await query.edit_message_text("❌ Hubo un error al guardar la cita. Intenta de nuevo por favor. 😔")
             
         return ConversationHandler.END
         
     if data == "cancel_booking":
-        await query.edit_message_text("❌ Proceso de agendamiento cancelado.")
+        await query.edit_message_text("❌ Proceso de agendamiento cancelado. ¡Avísame si necesitas algo más! 👋")
         return ConversationHandler.END
 
 # --- MANAGEMENT FLOW ---
@@ -737,27 +737,27 @@ async def receive_id_for_management(update: Update, context: ContextTypes.DEFAUL
     # Check for exit keywords
     exit_keywords = ["gracias", "listo", "salir", "cancelar", "terminar", "ya no", "adios"]
     if any(keyword in patient_id.lower() for keyword in exit_keywords):
-        await update.message.reply_text("✅ Entendido. Si necesitas algo más, aquí estaré.")
+        await update.message.reply_text("✅ Entendido. Si necesitas algo más, aquí estaré. ¡Que tengas buen día! 👋")
         return ConversationHandler.END
     
     # Clean input
     patient_id = ''.join(filter(str.isdigit, patient_id))
     
     if not patient_id:
-        await update.message.reply_text("⚠️ Cédula inválida. Intenta de nuevo.")
+        await update.message.reply_text("⚠️ Cédula inválida. Intenta de nuevo por favor. 🙏")
         return ENTERING_ID_CANCEL
         
     apps = database.get_appointments_by_patient(patient_id)
     
     if not apps:
-        await update.message.reply_text("No encontré citas activas para esta cédula.")
+        await update.message.reply_text("ℹ️ No encontré citas activas para esta cédula.")
         return ConversationHandler.END
     
     # Store ID for "Back" functionality
     context.user_data['manage_patient_id'] = patient_id
         
     # Show appointments
-    msg = "📅 **Tus Citas Activas:**\nSelecciona una cita de la lista si deseas cancelarla o cambiar el horario.\n_(Recuerda que debes hacerlo con al menos un día de antelación)_"
+    msg = "📅 **Tus Citas Activas:**\nSelecciona una cita de la lista si deseas cancelarla o cambiar el horario. 👇\n_(Recuerda que debes hacerlo con al menos un día de antelación)_"
     keyboard = []
     now = datetime.now()
     
@@ -765,6 +765,10 @@ async def receive_id_for_management(update: Update, context: ContextTypes.DEFAUL
         # Parse app date and time
         app_dt = datetime.strptime(f"{app['date']} {app['time']}", "%Y-%m-%d %H:%M:%S")
         
+        # Filter past appointments (keep only today and future)
+        if app_dt.date() < now.date():
+            continue
+
         # Format with Day Name
         days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
         day_name = days_es[app_dt.weekday()]
@@ -775,6 +779,7 @@ async def receive_id_for_management(update: Update, context: ContextTypes.DEFAUL
             callback = f"manage_{app['id']}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
         else:
+            # Today (Locked)
             btn_text = f"🔒 {day_name} {app['date']} {app['time']} (No modificable)"
             callback = "ignore_cancellation"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
@@ -803,7 +808,7 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
         
     if data == "ignore_cancellation":
-        await query.answer("⚠️ Esta cita ya no se puede modificar (menos de 24h).", show_alert=True)
+        await query.answer("⚠️ Esta cita ya no se puede modificar (menos de 24h). Lo siento 😔", show_alert=True)
         return ENTERING_ID_CANCEL
 
     if data.startswith("manage_"):
@@ -816,7 +821,7 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("🔙 Volver", callback_data="back_to_list")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("¿Qué deseas hacer con esta cita?", reply_markup=reply_markup)
+        await query.edit_message_text("¿Qué deseas hacer con esta cita? 🤔", reply_markup=reply_markup)
         return ENTERING_ID_CANCEL
         
     elif data == "back_to_list":
@@ -829,6 +834,10 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
             
             for app in apps:
                 app_dt = datetime.strptime(f"{app['date']} {app['time']}", "%Y-%m-%d %H:%M:%S")
+                # Filter past appointments
+                if app_dt.date() < now.date():
+                    continue
+
                 days_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
                 day_name = days_es[app_dt.weekday()]
                 
@@ -846,7 +855,7 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
             return ENTERING_ID_CANCEL
         else:
-            await query.edit_message_text("⚠️ Por favor ingresa tu cédula nuevamente.")
+            await query.edit_message_text("⚠️ Por favor ingresa tu cédula nuevamente. 🙏")
             return ENTERING_ID_CANCEL
 
     elif data == "confirm_cancel_ask":
@@ -854,7 +863,7 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("✅ Sí, Cancelar Cita", callback_data="do_cancel")],
             [InlineKeyboardButton("🔙 No, Volver", callback_data=f"manage_{context.user_data['manage_app_id']}")]
         ]
-        await query.edit_message_text("¿Estás seguro de que deseas cancelar esta cita?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("¿Estás seguro de que deseas cancelar esta cita? 😢", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENTERING_ID_CANCEL
         
     elif data == "do_cancel":
@@ -862,11 +871,11 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
         if database.cancel_appointment(app_id):
             msg = (
                 "✅ **Cita cancelada exitosamente.**\n\n"
-                "Si necesitas algo más como la dirección del consultorio o ayuda para agendar nuevamente otra cita no dudes en preguntar, estoy aquí para ayudarte."
+                "Si necesitas algo más como la dirección del consultorio o ayuda para agendar nuevamente otra cita no dudes en preguntar, estoy aquí para ayudarte. 🤝"
             )
             await query.edit_message_text(msg, parse_mode='Markdown')
         else:
-            await query.edit_message_text("❌ Error al cancelar la cita.")
+            await query.edit_message_text("❌ Error al cancelar la cita. Intenta más tarde. 😔")
             
     elif data == "reschedule_start":
         # Show confirmation before starting reschedule
@@ -876,7 +885,7 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("🔙 No, Volver", callback_data=f"manage_{app_id}")]
         ]
         await query.edit_message_text(
-            "¿Estás seguro de que deseas cambiar el horario de esta cita?",
+            "¿Estás seguro de que deseas cambiar el horario de esta cita? 🗓️",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ENTERING_ID_CANCEL
@@ -885,13 +894,13 @@ async def manage_appointment_menu(update: Update, context: ContextTypes.DEFAULT_
         # Start Calendar Flow for Reschedule
         context.user_data['is_rescheduling'] = True
         calendar_markup = create_calendar()
-        await query.edit_message_text("📅 Selecciona la nueva fecha:", reply_markup=calendar_markup)
+        await query.edit_message_text("📅 Selecciona la nueva fecha: 👇", reply_markup=calendar_markup)
         return CHOOSING_DATE
             
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operación cancelada.")
+    await update.message.reply_text("Operación cancelada. ¡Aquí estaré si me necesitas! 👋")
     return ConversationHandler.END
 
 def main():
